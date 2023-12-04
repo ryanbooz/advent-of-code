@@ -8,33 +8,46 @@ create table dec03 (
 /*
  * First Star
  * 
- * Game 1: 3 blue, 4 red; 1 red, 2 green, 6 blue; 2 green
+ * I could probably combine at least two of the CTEs,
+ * but separating them out allows me to build on each step
+ * 
  */
+-- This produces a table with every character in the grid as a row
 WITH scematic_table AS (
-	SELECT id, char, col FROM dec03,
-		regexp_split_to_table(lines,'') WITH ORDINALITY x(char,col)
+	SELECT id AS x, y, char  FROM dec03,
+		regexp_split_to_table(lines,'') WITH ORDINALITY x(char,y)
 ),
+-- now we return only symbols in this CTE result for later
 symbols AS (
-	SELECT id, char, col FROM scematic_table
+	SELECT x, y, char FROM scematic_table
 	WHERE char != '.' AND char !~ '(\d)'
 ),
+-- This returns a table with the row number, digits, or null for any other row/column
+-- This is used in the next CTE to find numbers that can be grouped together to identify
+-- a part.
 part_numbers_raw AS (
-	SELECT id, 
-		CASE WHEN char ~ ('\d') THEN char ELSE NULL END AS char,
-	col FROM scematic_table
+	SELECT x, y,
+		CASE WHEN char ~ ('\d') THEN char ELSE NULL END AS char
+	FROM scematic_table
 ),
+-- aggregate the digits where the count of nulls is the same (meaning they are not null values)
 part_numbers_position AS (
-	SELECT pos, id, string_agg(char,'') AS num, array_agg(col) AS cols FROM ( 
-		SELECT count(*) filter(WHERE char IS null) OVER (ORDER BY id, col) pos, id, char, col FROM part_numbers_raw
+	SELECT pos, x, string_agg(char,'') AS num, array_agg(y) AS cols FROM ( 
+		SELECT count(*) filter(WHERE char IS null) OVER (ORDER BY x,y) pos, x, y, char FROM part_numbers_raw
 	) a
 	WHERE char IS NOT NULL
 	GROUP BY 1,2
 )
+-- sum any part number that touches a symbol on any size or corner. We do this by
+-- joining on the current row, the previous row, and the next row, all using the same
+-- range of integers.
+--
+-- A symbole can match up and return more than one part number
 SELECT sum(num::int) FROM (
-	SELECT pos, id, num, int4range(cols[1]::int-1, cols[array_length(cols,1)]::int+1,'[]') numrange FROM part_numbers_position
+	SELECT pos, x, num, int4range(cols[1]::int-1, cols[array_length(cols,1)]::int+1,'[]') numrange FROM part_numbers_position
 ) pnp, symbols
-WHERE (pnp.id = symbols.id OR pnp.id = symbols.id+1 OR pnp.id = symbols.id-1)
-	AND symbols.col::int <@ numrange;
+WHERE (pnp.x = symbols.x OR pnp.x = symbols.x+1 OR pnp.x = symbols.x-1)
+	AND symbols.y::int <@ numrange;
 ORDER BY pnp.id, pnp.pos;
 
 
@@ -43,42 +56,50 @@ ORDER BY pnp.id, pnp.pos;
  * 
  * This was a lot of manipulation... but it worked. 😬
  */
+-- This produces a table with every character in the grid as a row
 WITH scematic_table AS (
-	SELECT id, char, col FROM dec03,
-		regexp_split_to_table(lines,'') WITH ORDINALITY x(char,col)
+	SELECT id AS x, y, char  FROM dec03,
+		regexp_split_to_table(lines,'') WITH ORDINALITY x(char,y)
 ),
+-- now we return only symbols in this CTE result for later
 symbols AS (
-	SELECT id, char, col FROM scematic_table
+	SELECT x, y, char FROM scematic_table
 	WHERE char != '.' AND char !~ '(\d)'
 ),
+-- This returns a table with the row number, digits, or null for any other row/column
+-- This is used in the next CTE to find numbers that can be grouped together to identify
+-- a part.
 part_numbers_raw AS (
-	SELECT id, 
-		CASE WHEN char ~ ('\d') THEN char ELSE NULL END AS char,
-	col FROM scematic_table
+	SELECT x, y,
+		CASE WHEN char ~ ('\d') THEN char ELSE NULL END AS char
+	FROM scematic_table
 ),
+-- aggregate the digits where the count of nulls is the same (meaning they are not null values)
 part_numbers_position AS (
-	SELECT pos, id, string_agg(char,'') AS num, array_agg(col) AS cols FROM ( 
-		SELECT count(*) filter(WHERE char IS null) OVER (ORDER BY id, col) pos, id, char, col FROM part_numbers_raw
+	SELECT pos, x, string_agg(char,'') AS num, array_agg(y) AS cols FROM ( 
+		SELECT count(*) filter(WHERE char IS null) OVER (ORDER BY x,y) pos, x, y, char FROM part_numbers_raw
 	) a
 	WHERE char IS NOT NULL
 	GROUP BY 1,2
 ),
+-- create a range for the gear position, extending out one on either side and making it inclusive
 potential_gears AS (
-	SELECT num, pnp.id, symbols.id AS sid, symbols.char, symbols.col, numrange FROM (
-		SELECT id, num, int4range(cols[1]::int-1, cols[array_length(cols,1)]::int+1,'[]') numrange FROM part_numbers_position
+	SELECT num, pnp.x, symbols.x AS sid, symbols.char, symbols.y, numrange FROM (
+		SELECT x, num, int4range(cols[1]::int-1, cols[array_length(cols,1)]::int+1,'[]') numrange FROM part_numbers_position
 	) pnp, symbols
-	WHERE (pnp.id = symbols.id OR pnp.id = symbols.id+1 OR pnp.id = symbols.id-1)
-		AND symbols.col::int <@ numrange
+	WHERE (pnp.x = symbols.x OR pnp.x = symbols.x+1 OR pnp.x = symbols.x-1)
+		AND symbols.y::int <@ numrange
 		AND symbols.char = '*'
 ),
+-- now only select the gears that touch the same * as another gear.
 real_gears AS (
-	SELECT DISTINCT min(num) OVER (PARTITION BY pg.sid, pg.col) n1, max(num) OVER (PARTITION BY pg.sid, pg.col) n2,
-		pg.sid, pg.col FROM potential_gears pg
+	SELECT DISTINCT min(num) OVER (PARTITION BY pg.sid, pg.y) n1, max(num) OVER (PARTITION BY pg.sid, pg.y) n2,
+		pg.sid, pg.y FROM potential_gears pg
 		JOIN (
-			SELECT sid, col FROM potential_gears
-			GROUP BY sid, col
+			SELECT sid, y FROM potential_gears
+			GROUP BY sid, y
 			HAVING count(*) = 2) g1
-		ON pg.sid = g1.sid AND pg.col = g1.col
+		ON pg.sid = g1.sid AND pg.y = g1.y
 )
 SELECT sum(n1::int*n2::int) FROM real_gears;
 
