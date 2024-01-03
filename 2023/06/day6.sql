@@ -80,25 +80,24 @@ SELECT multiply(count::numeric) FROM total_wins;
  * Second Star
  * 
  */
-with recursive test_lines AS (
+with recursive input_lines AS (
 	SELECT * FROM regexp_split_to_table($$Time:        54     70     82     75
 Distance:   239   1142   1295   1253$$,'\n') WITH ORDINALITY x(lines,id)
 ),
-games AS (
-	SELECT max(x::bigint) FILTER (WHERE id=1) AS t,
-		max(x::bigint) FILTER (WHERE id=2) AS d
+races_param AS (
+	SELECT max(x::bigint) FILTER (WHERE id=1) AS time,
+		max(x::bigint) FILTER (WHERE id=2) AS dist
 	FROM (
 		SELECT id, string_agg(g.num[1],'') AS x
-		FROM test_lines, regexp_matches(lines, '(\d+)','g') WITH ORDINALITY g(num,o)
+		FROM input_lines, regexp_matches(lines, '(\d+)','g') WITH ORDINALITY g(num,o)
 		GROUP BY id
 	) a
 ),
---SELECT * FROM games;
-game_time AS (
-	SELECT i, d AS dist, i*(t-i) p_dist FROM games, generate_series(d::bigint/t,t) i
+race_distance AS (
+	SELECT i, dist, i*(time-i) p_dist FROM races_param, generate_series(dist/time,time) i
 	ORDER BY i desc
 )
 --SELECT * FROM game_time;
 SELECT count(*)
-	FROM game_time
+	FROM race_distance
 		WHERE dist::bigint < p_dist;
